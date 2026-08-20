@@ -60,8 +60,28 @@
   //   wuTrack('Submitted inquiry form', { type: 'success', meta: { service: 'DJ' } });
   window.wuTrack = send;
 
+  // --- Referrer keyword: pull the search query out of a search engine's referrer URL ---
+  // (paid/organic search referrers carry the visitor's query string; social/direct don't)
+  function referrerKeyword() {
+    if (!document.referrer) return null;
+    try {
+      var u = new URL(document.referrer);
+      var host = u.hostname.replace(/^www\./, '');
+      var p = u.searchParams;
+      if (/(^|\.)google\./.test(host)) return p.get('q');
+      if (/(^|\.)bing\.com$/.test(host)) return p.get('q');
+      if (/(^|\.)search\.yahoo\./.test(host)) return p.get('p');
+      if (/(^|\.)duckduckgo\.com$/.test(host)) return p.get('q');
+      if (/(^|\.)baidu\.com$/.test(host)) return p.get('wd') || p.get('word');
+    } catch (e) {}
+    return null;
+  }
+
   // --- Automatic: page view on load ---
-  send('Viewed page: ' + location.pathname, { type: 'pageview' });
+  send('Viewed page: ' + location.pathname, {
+    type: 'pageview',
+    meta: { page_path: location.pathname, referrer_keyword: referrerKeyword() },
+  });
 
   // --- Automatic: time spent on this page ---
   // Fires once, whenever the visitor actually leaves (tab switch, close, or
@@ -85,6 +105,40 @@
   });
   window.addEventListener('pagehide', sendTiming);
 
+  // --- Automatic: scroll depth milestones (25% / 50% / 75% / 100%) ---
+  // Each milestone fires once per page, tagged with how long it took to reach it.
+  var SCROLL_MILESTONES = [25, 50, 75, 100];
+  var scrollReached = {};
+  var scrollTicking = false;
+  function scrollPercent() {
+    var doc = document.documentElement;
+    var scrollable = doc.scrollHeight - window.innerHeight;
+    if (scrollable <= 0) return 100;
+    return Math.min(100, Math.round(((window.scrollY || doc.scrollTop) / scrollable) * 100));
+  }
+  function checkScroll() {
+    scrollTicking = false;
+    var pct = scrollPercent();
+    SCROLL_MILESTONES.forEach(function (m) {
+      if (pct >= m && !scrollReached[m]) {
+        scrollReached[m] = true;
+        send('Scrolled ' + m + '% on page: ' + location.pathname, {
+          type: 'scroll',
+          meta: { kind: 'scroll', percent: m, page_path: location.pathname, time_to_reach_ms: Date.now() - pageStart },
+        });
+      }
+    });
+  }
+  window.addEventListener(
+    'scroll',
+    function () {
+      if (scrollTicking) return;
+      scrollTicking = true;
+      requestAnimationFrame(checkScroll);
+    },
+    { passive: true }
+  );
+
   // --- Automatic: clicks on anything tagged data-wu-track="Label text" ---
   // (explicit tags always win -- auto-capture below skips anything already
   // handled here so nothing gets logged twice)
@@ -106,6 +160,11 @@
 
   function textOf(el) {
     var t = (el.getAttribute('aria-label') || el.textContent || '').trim().replace(/\s+/g, ' ');
+    if (!t && el.querySelector) {
+      // No visible text (e.g. an image-only link/button) -- fall back to the image's alt text.
+      var img = el.querySelector('img');
+      if (img) t = (img.getAttribute('alt') || '').trim();
+    }
     return t.slice(0, 120);
   }
 
@@ -130,12 +189,14 @@
       var pricingEl = target.closest(PRICING_SELECTOR);
       if (pricingEl && pricingEl.closest) {
         var clickable = target.closest('a, button, [role="button"]') || pricingEl;
+        var pricingImg = clickable.querySelector && clickable.querySelector('img');
         send('Clicked pricing option: ' + textOf(clickable || pricingEl), {
           type: 'milestone',
           meta: {
             kind: 'pricing',
             text: textOf(clickable || pricingEl),
             href: clickable && clickable.getAttribute ? clickable.getAttribute('href') : null,
+            src: pricingImg ? (pricingImg.currentSrc || pricingImg.getAttribute('src') || null) : null,
             page_path: location.pathname,
           },
         });
