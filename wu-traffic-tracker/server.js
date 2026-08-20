@@ -3,7 +3,22 @@ const express = require('express');
 const cors = require('cors');
 const basicAuth = require('express-basic-auth');
 const path = require('path');
-const { logEvent, getEvents, getVisitors, getEventsByIp, cachedGeo, cacheGeo } = require('./db');
+const {
+  logEvent,
+  getEvents,
+  getVisitors,
+  getEventsByIp,
+  cachedGeo,
+  cacheGeo,
+  getAnalyticsOverview,
+  getDailyTrend,
+  getTrafficSources,
+  getPageStats,
+  getTopImages,
+  getTopPricing,
+  getPageFlow,
+  runReadOnlyQuery,
+} = require('./db');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -12,6 +27,8 @@ const PORT = process.env.PORT || 3000;
 app.set('trust proxy', true);
 
 app.use(express.json({ limit: '100kb' }));
+// sendBeacon posts with a Blob, which some browsers label as text/plain -- accept that as JSON too.
+app.use(express.json({ limit: '100kb', type: 'text/plain' }));
 
 // --- CORS: only allow the tracking beacon to be POSTed from your own site(s) ---
 const allowedOrigins = (process.env.ALLOWED_ORIGINS || '')
@@ -80,7 +97,7 @@ app.get('/tracker.js', cors(), (req, res) => {
 // --- Public: where the tracker posts events ---
 app.options('/api/track', cors(corsOptions));
 app.post('/api/track', cors(corsOptions), async (req, res) => {
-  const { label, event_type, session_id, page_url, referrer, meta } = req.body || {};
+  const { label, event_type, session_id, page_url, referrer, meta, duration_ms } = req.body || {};
 
   if (!label || typeof label !== 'string') {
     return res.status(400).json({ ok: false, error: 'label is required' });
@@ -108,6 +125,7 @@ app.post('/api/track', cors(corsOptions), async (req, res) => {
     geo_country: geo && geo.country,
     user_agent: userAgent,
     device_type: deviceType,
+    duration_ms: typeof duration_ms === 'number' ? duration_ms : null,
   });
 
   res.json({ ok: true });
@@ -141,6 +159,147 @@ app.get('/api/visitor-events', adminAuth, (req, res) => {
   res.json({ rows: getEventsByIp(ip) });
 });
 
+function parseDays(req) {
+  const d = parseInt(req.query.days, 10);
+  return Number.isFinite(d) && d > 0 ? Math.min(d, 365) : 30;
+}
+
+app.get('/api/analytics/overview', adminAuth, (req, res) => {
+  res.json(getAnalyticsOverview({ days: parseDays(req) }));
+});
+
+app.get('/api/analytics/trend', adminAuth, (req, res) => {
+  res.json({ rows: getDailyTrend({ days: parseDays(req) }) });
+});
+
+app.get('/api/analytics/sources', adminAuth, (req, res) => {
+  res.json({ rows: getTrafficSources({ days: parseDays(req) }) });
+});
+
+app.get('/api/analytics/pages', adminAuth, (req, res) => {
+  res.json({ rows: getPageStats({ days: parseDays(req) }) });
+});
+
+app.get('/api/analytics/top-images', adminAuth, (req, res) => {
+  res.json({ rows: getTopImages({ days: parseDays(req) }) });
+});
+
+app.get('/api/analytics/top-pricing', adminAuth, (req, res) => {
+  res.json({ rows: getTopPricing({ days: parseDays(req) }) });
+});
+
+app.get('/api/analytics/flow', adminAuth, (req, res) => {
+  res.json({ rows: getPageFlow({ days: parseDays(req) }) });
+});
+
+// --- AI query interface: ask a plain-English question about the traffic data ---
+const ANTHROPIC_API_URL = 'https://api.anthropic.com/v1/messages';
+const ANTHROPIC_MODEL = 'claude-sonnet-5';
+
+const SCHEMA_DESCRIPTION = `
+Table "events" (one row per tracked event):
+  id INTEGER, created_at TEXT (UTC, 'YYYY-MM-DD HH:MM:SS'), ip_address TEXT,
+  session_id TEXT, event_type TEXT (one of: pageview, click, milestone, success, error, timing, event),
+  label TEXT (human-readable description of the event),
+  page_url TEXT (full URL the event happened on), referrer TEXT,
+  meta TEXT (JSON -- use json_extract(meta, '$.field')),
+  geo_city TEXT, geo_region TEXT, geo_country TEXT, user_agent TEXT,
+  device_type TEXT (Mobile, Desktop, Tablet, or Bot),
+  duration_ms INTEGER (only set when event_type = 'timing' -- how long the visitor stayed on that page before leaving).
+
+Notes on "meta" JSON contents by event_type:
+  - click events: meta.kind is 'image', 'link', or 'button'; meta.src/alt for images; meta.href/text for links; meta.text for buttons; meta.page_path is the page it happened on.
+  - milestone events with meta.kind = 'pricing': a pricing option was clicked; label/meta.text is the option's visible text.
+  - timing events: meta.page_path is the page the duration applies to.
+
+Table "ip_geo": ip TEXT, city TEXT, region TEXT, country TEXT, looked_up_at TEXT. (Geo cache, rarely needed directly -- events already has geo_city/geo_region/geo_country.)
+`.trim();
+
+async function callClaude({ system, messages, max_tokens = 1024 }) {
+  const apiKey = process.env.ANTHROPIC_API_KEY;
+  if (!apiKey) throw new Error('ANTHROPIC_API_KEY is not set');
+  const r = await fetch(ANTHROPIC_API_URL, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'x-api-key': apiKey,
+      'anthropic-version': '2023-06-01',
+    },
+    body: JSON.stringify({ model: ANTHROPIC_MODEL, max_tokens, system, messages }),
+  });
+  if (!r.ok) {
+    const text = await r.text().catch(() => '');
+    throw new Error(`Anthropic API error ${r.status}: ${text.slice(0, 300)}`);
+  }
+  const data = await r.json();
+  return (data.content || [])
+    .filter((b) => b.type === 'text')
+    .map((b) => b.text)
+    .join('\n')
+    .trim();
+}
+
+// Guardrail: only ever allow a single, read-only SELECT statement through.
+const WRITE_KEYWORDS = /\b(insert|update|delete|drop|alter|attach|detach|pragma|vacuum|replace|truncate|create|reindex|analyze)\b/i;
+
+function sanitizeSelect(rawSql) {
+  let sql = (rawSql || '').trim();
+  // Strip markdown fences in case the model adds them despite instructions.
+  sql = sql.replace(/^```sql\s*/i, '').replace(/^```\s*/i, '').replace(/```$/i, '').trim();
+  // Only one statement: drop everything after a semicolon.
+  sql = sql.split(';')[0].trim();
+  if (!/^select\s/i.test(sql)) throw new Error('Generated query was not a SELECT statement');
+  if (WRITE_KEYWORDS.test(sql)) throw new Error('Generated query contained a disallowed keyword');
+  if (!/\blimit\s+\d+/i.test(sql)) sql += ' LIMIT 500';
+  return sql;
+}
+
+app.post('/api/ask', adminAuth, express.json(), async (req, res) => {
+  const question = (req.body && req.body.question || '').trim();
+  if (!question) return res.status(400).json({ ok: false, error: 'question is required' });
+
+  try {
+    const nowIso = new Date().toISOString();
+    const sqlText = await callClaude({
+      max_tokens: 400,
+      system:
+        `You translate questions about website analytics into a single SQLite SELECT query.\n\n` +
+        `Today's date/time (UTC) is ${nowIso}.\n\n${SCHEMA_DESCRIPTION}\n\n` +
+        `Rules:\n- Output ONLY the SQL query. No explanation, no markdown fences, no trailing semicolon.\n` +
+        `- SELECT only. Never write, alter, or delete anything.\n` +
+        `- Prefer COUNT/GROUP BY/ORDER BY to answer "most", "top", "which" style questions.\n` +
+        `- If the question implies a time window (e.g. "this week"), filter created_at accordingly relative to today's date above.`,
+      messages: [{ role: 'user', content: question }],
+    });
+
+    const sql = sanitizeSelect(sqlText);
+    let rows;
+    try {
+      rows = runReadOnlyQuery(sql);
+    } catch (e) {
+      return res.status(422).json({ ok: false, error: 'Query failed to run', sql, detail: String(e.message || e) });
+    }
+
+    const answer = await callClaude({
+      max_tokens: 500,
+      system:
+        `You are a concise analytics assistant for a wedding-vendor company's website traffic dashboard. ` +
+        `Answer the user's question using ONLY the query results provided. Cite specific numbers. ` +
+        `If the results are empty, say so plainly rather than guessing. Keep it to 2-4 sentences.`,
+      messages: [
+        {
+          role: 'user',
+          content: `Question: ${question}\n\nQuery results (JSON):\n${JSON.stringify(rows).slice(0, 8000)}`,
+        },
+      ],
+    });
+
+    res.json({ ok: true, answer, sql, rows: rows.slice(0, 50) });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: String(e.message || e) });
+  }
+});
+
 app.use('/admin', adminAuth, express.static(path.join(__dirname, 'views')));
 
 app.get('/health', (req, res) => res.json({ ok: true }));
@@ -148,4 +307,3 @@ app.get('/health', (req, res) => res.json({ ok: true }));
 app.listen(PORT, () => {
   console.log(`WU traffic tracker running on port ${PORT}`);
 });
-
