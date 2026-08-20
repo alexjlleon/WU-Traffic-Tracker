@@ -199,7 +199,7 @@ const ANTHROPIC_MODEL = 'claude-sonnet-5';
 const SCHEMA_DESCRIPTION = `
 Table "events" (one row per tracked event):
   id INTEGER, created_at TEXT (UTC, 'YYYY-MM-DD HH:MM:SS'), ip_address TEXT,
-  session_id TEXT, event_type TEXT (one of: pageview, click, milestone, success, error, timing, event),
+  session_id TEXT, event_type TEXT (one of: pageview, click, milestone, success, error, timing, scroll, event),
   label TEXT (human-readable description of the event),
   page_url TEXT (full URL the event happened on), referrer TEXT,
   meta TEXT (JSON -- use json_extract(meta, '$.field')),
@@ -208,9 +208,11 @@ Table "events" (one row per tracked event):
   duration_ms INTEGER (only set when event_type = 'timing' -- how long the visitor stayed on that page before leaving).
 
 Notes on "meta" JSON contents by event_type:
+  - pageview events: meta.referrer_keyword is the search query that brought them here, when the referrer was a search engine (Google/Bing/Yahoo/DuckDuckGo/Baidu); null for direct/social traffic.
   - click events: meta.kind is 'image', 'link', or 'button'; meta.src/alt for images; meta.href/text for links; meta.text for buttons; meta.page_path is the page it happened on.
-  - milestone events with meta.kind = 'pricing': a pricing option was clicked; label/meta.text is the option's visible text.
+  - milestone events with meta.kind = 'pricing': a pricing option was clicked; label/meta.text is the option's visible text; meta.src if the option had a thumbnail image.
   - timing events: meta.page_path is the page the duration applies to.
+  - scroll events: meta.percent is the depth milestone reached (25/50/75/100), meta.time_to_reach_ms is how long it took, meta.page_path is the page.
 
 Table "ip_geo": ip TEXT, city TEXT, region TEXT, country TEXT, looked_up_at TEXT. (Geo cache, rarely needed directly -- events already has geo_city/geo_region/geo_country.)
 `.trim();
