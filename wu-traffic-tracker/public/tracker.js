@@ -30,12 +30,25 @@
       page_url: location.href,
       referrer: document.referrer || null,
       meta: opts.meta || null,
+      duration_ms: opts.duration_ms || null,
     };
+    var body = JSON.stringify(payload);
+
+    // Use sendBeacon when we can (fires reliably even as the page is unloading).
+    // Fall back to fetch with keepalive otherwise.
+    try {
+      if (opts.beacon && navigator.sendBeacon) {
+        var blob = new Blob([body], { type: 'application/json' });
+        navigator.sendBeacon(endpoint, blob);
+        return;
+      }
+    } catch (e) {}
+
     try {
       fetch(endpoint, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload),
+        body: body,
         keepalive: true, // lets the request finish even if the page is navigating away
       }).catch(function () {});
     } catch (e) {
@@ -50,87 +63,122 @@
   // --- Automatic: page view on load ---
   send('Viewed page: ' + location.pathname, { type: 'pageview' });
 
+  // --- Automatic: time spent on this page ---
+  // Fires once, whenever the visitor actually leaves (tab switch, close, or
+  // navigating to another page) -- not on every visibility flicker.
+  var pageStart = Date.now();
+  var sentTiming = false;
+  function sendTiming() {
+    if (sentTiming) return;
+    sentTiming = true;
+    var duration = Date.now() - pageStart;
+    if (duration < 250) return; // ignore accidental instant bounces / bot hits
+    send('Time on page: ' + location.pathname, {
+      type: 'timing',
+      duration_ms: duration,
+      beacon: true,
+      meta: { page_path: location.pathname },
+    });
+  }
+  document.addEventListener('visibilitychange', function () {
+    if (document.visibilityState === 'hidden') sendTiming();
+  });
+  window.addEventListener('pagehide', sendTiming);
+
   // --- Automatic: clicks on anything tagged data-wu-track="Label text" ---
-  // (checked first so manually-tagged elements don't ALSO get logged by
-  // the generic auto-capture below)
-  //
-  // --- Automatic (auto-capture): clicks on links, buttons, and images anywhere on the page ---
-  // Never captures form field values -- only the element that was clicked.
-  var CLICKABLE_SELECTOR = 'a, button, input[type="button"], input[type="submit"], img, [role="button"]';
+  // (explicit tags always win -- auto-capture below skips anything already
+  // handled here so nothing gets logged twice)
+  document.addEventListener(
+    'click',
+    function (e) {
+      var el = e.target.closest && e.target.closest('[data-wu-track]');
+      if (!el) return;
+      var label = el.getAttribute('data-wu-track');
+      var type = el.getAttribute('data-wu-type') || 'click';
+      send(label, { type: type });
+    },
+    true
+  );
 
-  function shortText(s, max) {
-    if (!s) return '';
-    s = s.replace(/\s+/g, ' ').trim();
-    return s.length > max ? s.slice(0, max - 1) + '\u2026' : s;
+  // --- Automatic: site-wide click capture for links, buttons, images, and pricing options ---
+  // Runs on the same click, but only for elements NOT already handled by data-wu-track above.
+  var PRICING_SELECTOR = '[class*="pric" i], [id*="pric" i], [class*="plan" i], [class*="package" i], [data-price], [data-plan]';
+
+  function textOf(el) {
+    var t = (el.getAttribute('aria-label') || el.textContent || '').trim().replace(/\s+/g, ' ');
+    return t.slice(0, 120);
   }
 
-  function cssPath(el) {
-    if (el.id) return '#' + el.id;
-    var cls = (el.className && typeof el.className === 'string')
-      ? el.className.trim().split(/\s+/).filter(Boolean).slice(0, 2).join('.')
-      : '';
-    return el.tagName.toLowerCase() + (cls ? '.' + cls : '');
-  }
-
-  function describeClick(el) {
-    var tag = el.tagName.toLowerCase();
-    var meta = { tag: tag, selector: cssPath(el) };
-
-    if (tag === 'img') {
-      var alt = el.getAttribute('alt') || '';
-      meta.src = el.currentSrc || el.src || null;
-      return { label: 'Clicked image' + (alt ? ': ' + shortText(alt, 60) : ''), meta: meta };
-    }
-
-    var text = shortText(el.textContent, 80) ||
-      el.getAttribute('aria-label') ||
-      el.getAttribute('title') ||
-      el.getAttribute('value') || '';
-
-    if (tag === 'a' && el.href) meta.href = el.href;
-
-    return { label: 'Clicked' + (text ? ': ' + text : ' ' + tag), meta: meta };
+  function imageLabel(img) {
+    var alt = (img.getAttribute('alt') || '').trim();
+    if (alt) return alt.slice(0, 120);
+    var src = img.currentSrc || img.getAttribute('src') || '';
+    var file = src.split('/').pop().split('?')[0];
+    return file || 'image';
   }
 
   document.addEventListener(
     'click',
     function (e) {
-      var tagged = e.target.closest && e.target.closest('[data-wu-track]');
-      if (tagged) {
-        var label = tagged.getAttribute('data-wu-track');
-        var type = tagged.getAttribute('data-wu-type') || 'click';
-        send(label, { type: type });
+      var target = e.target;
+      if (!(target && target.closest)) return;
+
+      // Don't double-log something already sent via the explicit data-wu-track handler.
+      if (target.closest('[data-wu-track]')) return;
+
+      // Pricing options: check this first since a pricing card is often also a link/button.
+      var pricingEl = target.closest(PRICING_SELECTOR);
+      if (pricingEl && pricingEl.closest) {
+        var clickable = target.closest('a, button, [role="button"]') || pricingEl;
+        send('Clicked pricing option: ' + textOf(clickable || pricingEl), {
+          type: 'milestone',
+          meta: {
+            kind: 'pricing',
+            text: textOf(clickable || pricingEl),
+            href: clickable && clickable.getAttribute ? clickable.getAttribute('href') : null,
+            page_path: location.pathname,
+          },
+        });
         return;
       }
 
-      var el = e.target.closest && e.target.closest(CLICKABLE_SELECTOR);
-      if (!el) return;
+      var img = target.closest('img');
+      if (img) {
+        send('Clicked image: ' + imageLabel(img), {
+          type: 'click',
+          meta: {
+            kind: 'image',
+            src: img.currentSrc || img.getAttribute('src') || null,
+            alt: img.getAttribute('alt') || null,
+            page_path: location.pathname,
+          },
+        });
+        return;
+      }
 
-      var info = describeClick(el);
-      send(info.label, { type: 'click', meta: info.meta });
+      var link = target.closest('a');
+      if (link) {
+        send('Clicked link: ' + (textOf(link) || link.getAttribute('href') || ''), {
+          type: 'click',
+          meta: {
+            kind: 'link',
+            href: link.getAttribute('href') || null,
+            text: textOf(link),
+            page_path: location.pathname,
+          },
+        });
+        return;
+      }
+
+      var btn = target.closest('button, [role="button"], input[type="submit"], input[type="button"]');
+      if (btn) {
+        var label = textOf(btn) || btn.value || 'button';
+        send('Clicked button: ' + label, {
+          type: 'click',
+          meta: { kind: 'button', text: label, page_path: location.pathname },
+        });
+      }
     },
     true
   );
-
-  // --- Automatic: time spent on this page, sent once when the visitor leaves ---
-  var pageStart = Date.now();
-  var timingSent = false;
-
-  function sendTiming() {
-    if (timingSent) return;
-    var duration = Date.now() - pageStart;
-    if (duration < 1000) return; // skip near-instant bounces, not meaningful
-    timingSent = true;
-    send('Time on page', {
-      type: 'timing',
-      meta: { duration_ms: duration, page_url: location.href },
-    });
-  }
-
-  // pagehide fires reliably on navigation/tab close across desktop + mobile.
-  window.addEventListener('pagehide', sendTiming);
-  // Fallback: tab backgrounded (covers cases where pagehide doesn't fire).
-  document.addEventListener('visibilitychange', function () {
-    if (document.visibilityState === 'hidden') sendTiming();
-  });
 })();
