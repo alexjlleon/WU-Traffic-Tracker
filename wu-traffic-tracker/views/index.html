@@ -509,33 +509,52 @@
   // line with Load / Scroll / exit-time pills together, instead of three
   // separate rows. Other event types (clicks, milestones, etc.) pass through
   // untouched. Input rows are newest-first; output stays newest-first.
-  function buildVisitorTimeline(rows){
+  // Merges scroll-depth and time-on-page events into the pageview row they
+  // belong to (matched by session + page_path), so a single page visit shows
+  // as one line with Load / Scroll / exit-time pills together, instead of
+  // three separate rows. Other event types (clicks, milestones, etc.) pass
+  // through untouched. keyOf(event) groups events so concurrent visitors in
+  // a mixed list (e.g. the flat Events tab) never cross-attach to each
+  // other's pageviews. Input rows are newest-first; output stays newest-first.
+  function buildTimeline(rows, keyOf){
     const chron = [...rows].reverse(); // oldest first, so a pageview's later scroll/timing events follow it
     const merged = [];
-    let open = null; // { event, meta, maxScroll, durationMs }
-    function flush(){
-      if (open) merged.push(open);
-      open = null;
-    }
+    const openByKey = new Map(); // key -> the pageview item object, mutated in place when its scroll/timing events arrive
     for (const e of chron){
       const meta = parseMeta(e.meta);
       const path = meta && meta.page_path;
+      const key = keyOf(e);
       if (e.event_type === 'pageview'){
-        flush();
-        open = { event: e, meta, maxScroll: null, durationMs: null };
-      } else if (e.event_type === 'scroll' && open && path && path === (open.meta && open.meta.page_path)){
-        if (meta.percent != null && (open.maxScroll == null || meta.percent > open.maxScroll)) open.maxScroll = meta.percent;
-      } else if (e.event_type === 'timing' && open && path && path === (open.meta && open.meta.page_path)){
-        open.durationMs = e.duration_ms;
+        const item = { event: e, meta, maxScroll: null, durationMs: null };
+        merged.push(item);
+        openByKey.set(key, item);
       } else if (e.event_type === 'scroll' || e.event_type === 'timing'){
+        const open = openByKey.get(key);
+        if (open && path && path === (open.meta && open.meta.page_path)){
+          if (e.event_type === 'scroll'){
+            if (meta.percent != null && (open.maxScroll == null || meta.percent > open.maxScroll)) open.maxScroll = meta.percent;
+          } else {
+            open.durationMs = e.duration_ms;
+          }
+        }
         // No matching pageview to attach to -- drop rather than show a bare row.
       } else {
-        flush();
         merged.push({ event: e, meta, standalone: true });
       }
     }
-    flush();
     return merged.reverse();
+  }
+
+  function buildVisitorTimeline(rows){
+    return buildTimeline(rows, e => e.session_id);
+  }
+
+  // Pills for a merged pageview item: Load, plus Scroll depth / exit time when known.
+  function pageviewPills(item){
+    let pills = '<span class="pill pageview">Load</span>';
+    if (item.maxScroll != null) pills += `<span class="pill scroll">Scroll ${item.maxScroll}%</span>`;
+    if (item.durationMs != null) pills += `<span class="pill timing">exit ${fmtDuration(item.durationMs)}</span>`;
+    return pills;
   }
 
   // Renders one merged timeline item as a line: thumbnail (if any), time,
@@ -556,16 +575,13 @@
       return `<div>${eventThumb(meta)}<span class="stime">${fmtTime(e.created_at)}</span>${esc(e.label)}${typePill}${badge}${refBit}</div>`;
     }
     // Pageview row, possibly carrying scroll + exit-time pills.
-    let pills = '<span class="pill pageview">Load</span>';
-    if (item.maxScroll != null) pills += `<span class="pill scroll">Scroll ${item.maxScroll}%</span>`;
-    if (item.durationMs != null) pills += `<span class="pill timing">exit ${fmtDuration(item.durationMs)}</span>`;
     let refBit = '';
     if (meta && meta.referrer_keyword){
       refBit = ` &middot; <span class="pill keyword">via keyword: ${esc(meta.referrer_keyword)}</span>`;
     } else if (e.referrer){
       refBit = ` &middot; <span title="${esc(e.referrer)}">from ${fmtRef(e.referrer)}</span>`;
     }
-    return `<div><span class="stime">${fmtTime(e.created_at)}</span>${esc(e.label)}${pills}${refBit}</div>`;
+    return `<div><span class="stime">${fmtTime(e.created_at)}</span>${esc(e.label)}${pageviewPills(item)}${refBit}</div>`;
   }
 
   function fmtDuration(ms){
@@ -592,17 +608,21 @@
     tbody.innerHTML = '';
     document.getElementById('emptyMsg').style.display = data.rows.length ? 'none' : 'block';
 
-    for (const r of data.rows){
+    for (const item of buildTimeline(data.rows, r => r.session_id)){
+      const r = item.event;
+      const meta = item.meta;
       const tr = document.createElement('tr');
       tr.className = rowClass(r.event_type);
-      const meta = parseMeta(r.meta);
+      const eventCell = item.standalone
+        ? `${eventThumb(meta)}${esc(r.label)}${eventBadge(r, meta)}`
+        : `${esc(r.label)}${pageviewPills(item)}`;
       tr.innerHTML = `
         <td class="when">${fmtTime(r.created_at)}</td>
         <td class="ip"><button title="Filter to this session" data-sid="${esc(r.session_id || '')}">${esc(r.ip_address || '\u2014')}</button></td>
         <td class="loc">${fmtLoc(r.geo_city, r.geo_region, r.geo_country)}</td>
         <td class="device">${fmtDevice(r.device_type)}</td>
         <td class="ref" title="${esc(r.referrer || '')}">${fmtReferrerCell(r, meta)}</td>
-        <td class="label">${eventThumb(meta)}${esc(r.label)}${eventBadge(r, meta)}</td>
+        <td class="label">${eventCell}</td>
       `;
       tbody.appendChild(tr);
     }
