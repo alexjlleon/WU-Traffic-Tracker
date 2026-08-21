@@ -145,10 +145,15 @@
   td.count{ text-align:right; font-variant-numeric:tabular-nums; }
   tr.subrow td{ background:#fafbfc; font-size:12.5px; padding:6px 20px 6px 44px; color:var(--dim); }
   tr.subrow .stime{ color:var(--dim); margin-right:10px; font-variant-numeric:tabular-nums; }
-  .pill{ display:inline-block; font-size:10.5px; padding:1px 6px; border-radius:10px; margin-left:6px; vertical-align:middle; }
+  .pill{ display:inline-block; font-size:10.5px; padding:1px 6px; border-radius:10px; margin-left:6px; vertical-align:middle; white-space:nowrap; }
   .pill.milestone{ background:var(--milestone); }
   .pill.success{ background:var(--success); }
   .pill.error{ background:var(--error); }
+  .pill.pageview{ background:#fff3c4; }
+  .pill.scroll{ background:#cfe8ff; }
+  .pill.timing{ background:#1c2128; color:#fff; }
+  .pill.keyword{ background:#c4f7ef; }
+  .thumb{ width:28px; height:28px; object-fit:cover; border-radius:4px; vertical-align:middle; margin-right:6px; border:1px solid var(--line); background:#f4f5f7; }
 
   .pager{
     display:flex;
@@ -464,6 +469,41 @@
     }
   }
 
+  function parseMeta(m){
+    if (!m) return null;
+    try { return JSON.parse(m); } catch(e){ return null; }
+  }
+
+  // Referrer cell: search-engine keyword (if we captured one) beats a plain domain,
+  // which beats a bare "Direct".
+  function fmtReferrerCell(row, meta){
+    if (meta && meta.referrer_keyword){
+      return `<span class="pill keyword">via keyword: ${esc(meta.referrer_keyword)}</span>`;
+    }
+    if (row.referrer) return fmtRef(row.referrer);
+    return '&mdash;';
+  }
+
+  // Badge for the event itself: pageview -> "Load", scroll -> "Scroll N%", timing -> "Xs on page".
+  function eventBadge(row, meta){
+    if (row.event_type === 'pageview') return '<span class="pill pageview">Load</span>';
+    if (row.event_type === 'scroll' && meta && meta.percent != null){
+      return `<span class="pill scroll">Scroll ${meta.percent}%</span>`;
+    }
+    if (row.event_type === 'timing' && row.duration_ms != null){
+      return `<span class="pill timing">${fmtDuration(row.duration_ms)} on page</span>`;
+    }
+    return '';
+  }
+
+  // Thumbnail for image clicks (and pricing clicks that wrap an image).
+  function eventThumb(meta){
+    if (meta && meta.src && (meta.kind === 'image' || meta.kind === 'pricing')){
+      return `<img class="thumb" src="${esc(meta.src)}" alt="" loading="lazy" />`;
+    }
+    return '';
+  }
+
   function fmtDuration(ms){
     if (ms == null) return '&mdash;';
     const s = Math.round(ms / 1000);
@@ -491,13 +531,14 @@
     for (const r of data.rows){
       const tr = document.createElement('tr');
       tr.className = rowClass(r.event_type);
+      const meta = parseMeta(r.meta);
       tr.innerHTML = `
         <td class="when">${fmtTime(r.created_at)}</td>
         <td class="ip"><button title="Filter to this session" data-sid="${esc(r.session_id || '')}">${esc(r.ip_address || '\u2014')}</button></td>
         <td class="loc">${fmtLoc(r.geo_city, r.geo_region, r.geo_country)}</td>
         <td class="device">${fmtDevice(r.device_type)}</td>
-        <td class="ref" title="${esc(r.referrer || '')}">${fmtRef(r.referrer)}</td>
-        <td class="label">${esc(r.label)}</td>
+        <td class="ref" title="${esc(r.referrer || '')}">${fmtReferrerCell(r, meta)}</td>
+        <td class="label">${eventThumb(meta)}${esc(r.label)}${eventBadge(r, meta)}</td>
       `;
       tbody.appendChild(tr);
     }
@@ -556,10 +597,17 @@
         const sub = document.createElement('tr');
         sub.className = 'subrow';
         const items = ed.rows.map(e => {
+          const meta = parseMeta(e.meta);
           const cls = ['milestone','success','error'].includes(e.event_type) ? e.event_type : '';
-          const pill = cls ? `<span class="pill ${cls}">${cls}</span>` : '';
-          const ref = e.referrer ? ` &middot; <span title="${esc(e.referrer)}">from ${fmtRef(e.referrer)}</span>` : '';
-          return `<div><span class="stime">${fmtTime(e.created_at)}</span>${esc(e.label)}${pill}${ref}</div>`;
+          const typePill = cls ? `<span class="pill ${cls}">${cls}</span>` : '';
+          const badge = eventBadge(e, meta);
+          let refBit = '';
+          if (meta && meta.referrer_keyword){
+            refBit = ` &middot; <span class="pill keyword">via keyword: ${esc(meta.referrer_keyword)}</span>`;
+          } else if (e.referrer){
+            refBit = ` &middot; <span title="${esc(e.referrer)}">from ${fmtRef(e.referrer)}</span>`;
+          }
+          return `<div>${eventThumb(meta)}<span class="stime">${fmtTime(e.created_at)}</span>${esc(e.label)}${typePill}${badge}${refBit}</div>`;
         }).join('');
         sub.innerHTML = `<td colspan="6">${items || 'No events.'}</td>`;
         tr.after(sub);
