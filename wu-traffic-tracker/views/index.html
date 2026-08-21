@@ -504,6 +504,70 @@
     return '';
   }
 
+  // Merges scroll-depth and time-on-page events into the pageview row they
+  // belong to (matched by page_path), so a single page visit shows as one
+  // line with Load / Scroll / exit-time pills together, instead of three
+  // separate rows. Other event types (clicks, milestones, etc.) pass through
+  // untouched. Input rows are newest-first; output stays newest-first.
+  function buildVisitorTimeline(rows){
+    const chron = [...rows].reverse(); // oldest first, so a pageview's later scroll/timing events follow it
+    const merged = [];
+    let open = null; // { event, meta, maxScroll, durationMs }
+    function flush(){
+      if (open) merged.push(open);
+      open = null;
+    }
+    for (const e of chron){
+      const meta = parseMeta(e.meta);
+      const path = meta && meta.page_path;
+      if (e.event_type === 'pageview'){
+        flush();
+        open = { event: e, meta, maxScroll: null, durationMs: null };
+      } else if (e.event_type === 'scroll' && open && path && path === (open.meta && open.meta.page_path)){
+        if (meta.percent != null && (open.maxScroll == null || meta.percent > open.maxScroll)) open.maxScroll = meta.percent;
+      } else if (e.event_type === 'timing' && open && path && path === (open.meta && open.meta.page_path)){
+        open.durationMs = e.duration_ms;
+      } else if (e.event_type === 'scroll' || e.event_type === 'timing'){
+        // No matching pageview to attach to -- drop rather than show a bare row.
+      } else {
+        flush();
+        merged.push({ event: e, meta, standalone: true });
+      }
+    }
+    flush();
+    return merged.reverse();
+  }
+
+  // Renders one merged timeline item as a line: thumbnail (if any), time,
+  // label, then pills for type / Load / Scroll depth / exit time / referrer keyword.
+  function renderTimelineItem(item){
+    const e = item.event;
+    const meta = item.meta;
+    if (item.standalone){
+      const cls = ['milestone','success','error'].includes(e.event_type) ? e.event_type : '';
+      const typePill = cls ? `<span class="pill ${cls}">${cls}</span>` : '';
+      const badge = eventBadge(e, meta);
+      let refBit = '';
+      if (meta && meta.referrer_keyword){
+        refBit = ` &middot; <span class="pill keyword">via keyword: ${esc(meta.referrer_keyword)}</span>`;
+      } else if (e.referrer){
+        refBit = ` &middot; <span title="${esc(e.referrer)}">from ${fmtRef(e.referrer)}</span>`;
+      }
+      return `<div>${eventThumb(meta)}<span class="stime">${fmtTime(e.created_at)}</span>${esc(e.label)}${typePill}${badge}${refBit}</div>`;
+    }
+    // Pageview row, possibly carrying scroll + exit-time pills.
+    let pills = '<span class="pill pageview">Load</span>';
+    if (item.maxScroll != null) pills += `<span class="pill scroll">Scroll ${item.maxScroll}%</span>`;
+    if (item.durationMs != null) pills += `<span class="pill timing">exit ${fmtDuration(item.durationMs)}</span>`;
+    let refBit = '';
+    if (meta && meta.referrer_keyword){
+      refBit = ` &middot; <span class="pill keyword">via keyword: ${esc(meta.referrer_keyword)}</span>`;
+    } else if (e.referrer){
+      refBit = ` &middot; <span title="${esc(e.referrer)}">from ${fmtRef(e.referrer)}</span>`;
+    }
+    return `<div><span class="stime">${fmtTime(e.created_at)}</span>${esc(e.label)}${pills}${refBit}</div>`;
+  }
+
   function fmtDuration(ms){
     if (ms == null) return '&mdash;';
     const s = Math.round(ms / 1000);
@@ -596,19 +660,7 @@
         const ed = await er.json();
         const sub = document.createElement('tr');
         sub.className = 'subrow';
-        const items = ed.rows.map(e => {
-          const meta = parseMeta(e.meta);
-          const cls = ['milestone','success','error'].includes(e.event_type) ? e.event_type : '';
-          const typePill = cls ? `<span class="pill ${cls}">${cls}</span>` : '';
-          const badge = eventBadge(e, meta);
-          let refBit = '';
-          if (meta && meta.referrer_keyword){
-            refBit = ` &middot; <span class="pill keyword">via keyword: ${esc(meta.referrer_keyword)}</span>`;
-          } else if (e.referrer){
-            refBit = ` &middot; <span title="${esc(e.referrer)}">from ${fmtRef(e.referrer)}</span>`;
-          }
-          return `<div>${eventThumb(meta)}<span class="stime">${fmtTime(e.created_at)}</span>${esc(e.label)}${typePill}${badge}${refBit}</div>`;
-        }).join('');
+        const items = buildVisitorTimeline(ed.rows).map(renderTimelineItem).join('');
         sub.innerHTML = `<td colspan="6">${items || 'No events.'}</td>`;
         tr.after(sub);
       });
