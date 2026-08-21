@@ -38,7 +38,12 @@
     // Fall back to fetch with keepalive otherwise.
     try {
       if (opts.beacon && navigator.sendBeacon) {
-        var blob = new Blob([body], { type: 'application/json' });
+        // Cross-origin sendBeacon only reliably delivers with a CORS-safelisted
+        // content type (text/plain, multipart/form-data, or
+        // application/x-www-form-urlencoded) -- 'application/json' silently
+        // fails to send cross-origin since beacons can't do a CORS preflight.
+        // The body is still valid JSON; the server parses text/plain as JSON too.
+        var blob = new Blob([body], { type: 'text/plain' });
         navigator.sendBeacon(endpoint, blob);
         return;
       }
