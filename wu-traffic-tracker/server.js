@@ -338,6 +338,13 @@ app.post('/api/people/stage', adminAuth, express.json(), (req, res) => {
 // Behavior comparison: converted vs inquired-not-booked vs anonymous.
 app.get('/api/insights', adminAuth, (req, res) => res.json(identity.getInsights()));
 
+// Delete a person (unlinks their sessions; raw events are kept).
+app.post('/api/people/delete', adminAuth, express.json(), (req, res) => {
+  const { email } = req.body || {};
+  if (!email) return res.status(400).json({ ok: false, error: 'email is required' });
+  res.json({ ok: true, result: identity.deletePerson(email) });
+});
+
 app.use('/admin', adminAuth, express.static(path.join(__dirname, 'views')));
 
 app.get('/health', (req, res) => res.json({ ok: true }));
