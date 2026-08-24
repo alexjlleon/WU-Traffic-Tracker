@@ -20,6 +20,8 @@ const {
   runReadOnlyQuery,
 } = require('./db');
 
+const identity = require('./identity');
+
 const app = express();
 const PORT = process.env.PORT || 3000;
 
@@ -128,6 +130,16 @@ app.post('/api/track', cors(corsOptions), async (req, res) => {
     duration_ms: typeof duration_ms === 'number' ? duration_ms : null,
   });
 
+  res.json({ ok: true });
+});
+
+// --- Public: form submissions identify a visitor by name/email ---
+// Sent as text/plain so it does not trigger a CORS preflight.
+app.options('/api/identify', cors(corsOptions));
+app.post('/api/identify', cors(corsOptions), (req, res) => {
+  const { session_id, email, name, phone } = req.body || {};
+  const ok = identity.upsertIdentity({ session_id, email, name, phone });
+  if (!ok) return res.status(400).json({ ok: false, error: 'session_id and a valid email are required' });
   res.json({ ok: true });
 });
 
@@ -301,6 +313,30 @@ app.post('/api/ask', adminAuth, express.json(), async (req, res) => {
     res.status(500).json({ ok: false, error: String(e.message || e) });
   }
 });
+
+// --- People: identified visitors and their funnel stage ---
+app.get('/api/people', adminAuth, (req, res) => {
+  const page = Math.max(1, parseInt(req.query.page, 10) || 1);
+  res.json(identity.getPeople({ page, pageSize: 50 }));
+});
+
+app.get('/api/person-events', adminAuth, (req, res) => {
+  const email = req.query.email || '';
+  if (!email) return res.status(400).json({ ok: false, error: 'email is required' });
+  res.json({ rows: identity.getPersonEvents(email) });
+});
+
+app.post('/api/people/stage', adminAuth, express.json(), (req, res) => {
+  const { email, stage } = req.body || {};
+  if (!email || !stage) return res.status(400).json({ ok: false, error: 'email and stage are required' });
+  if (!identity.setPersonStage(email, stage)) {
+    return res.status(400).json({ ok: false, error: 'unknown person or invalid stage' });
+  }
+  res.json({ ok: true });
+});
+
+// Behavior comparison: converted vs inquired-not-booked vs anonymous.
+app.get('/api/insights', adminAuth, (req, res) => res.json(identity.getInsights()));
 
 app.use('/admin', adminAuth, express.static(path.join(__dirname, 'views')));
 
