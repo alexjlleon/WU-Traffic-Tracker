@@ -166,4 +166,14 @@ function getInsights() {
   return out;
 }
 
-module.exports = { upsertIdentity, setPersonStage, getPeople, getPersonEvents, getInsights };
+// Remove a person and unlink their sessions. Events themselves are kept --
+// only the identity link is removed, so traffic history stays intact.
+function deletePerson(email) {
+  email = String(email).trim().toLowerCase();
+  if (!email) return false;
+  const unlink = db.prepare(`DELETE FROM identity_sessions WHERE email = ?`).run(email);
+  const removed = db.prepare(`DELETE FROM people WHERE email = ?`).run(email);
+  return { deleted: removed.changes > 0, sessions_unlinked: unlink.changes };
+}
+
+module.exports = { upsertIdentity, setPersonStage, getPeople, getPersonEvents, getInsights, deletePerson };
