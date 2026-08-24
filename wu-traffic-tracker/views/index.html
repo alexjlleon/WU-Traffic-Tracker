@@ -289,6 +289,7 @@
   <button id="tabEvents" class="active">Events</button>
   <button id="tabVisitors">By Visitor</button>
   <button id="tabAnalytics">Analytics</button>
+  <button id="tabPeople">People</button>
 </div>
 
 <div class="controls" id="eventsControls">
@@ -877,5 +878,189 @@
   load();
   setupAutoRefresh();
 </script>
+
+<!-- ===== People tab (identified visitors) ===== -->
+<div id="peopleView" style="display:none;">
+  <div class="tabs" style="border-bottom:none;padding-bottom:0;">
+    <button id="wuSubPeople" class="active">People</button>
+    <button id="wuSubInsights">Insights</button>
+  </div>
+
+  <div id="wuPeopleWrap">
+    <table>
+      <thead><tr>
+        <th>Person</th><th style="width:130px;">Stage</th><th style="width:80px;">Sessions</th>
+        <th style="width:70px;">Events</th><th style="width:150px;">First seen</th>
+        <th style="width:150px;">Last seen</th>
+      </tr></thead>
+      <tbody id="wuPeopleRows"></tbody>
+    </table>
+    <div id="wuEmpty" style="display:none;padding:40px 20px;color:var(--dim);text-align:center;font-size:13.5px;">
+      No one has identified themselves yet. Once a form calls wuIdentify(), people appear here.
+    </div>
+  </div>
+
+  <div id="wuInsightsWrap" style="display:none;">
+    <div style="padding:12px 20px 0;font-size:12.5px;color:var(--dim);">
+      Sessions grouped by the stage of the person they belong to.
+    </div>
+    <div id="wuCards" style="padding:14px 20px 30px;display:grid;gap:14px;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));"></div>
+  </div>
+</div>
+
+<style>
+  #peopleView tr.wuperson{cursor:pointer;}
+  #peopleView tr.wuperson:hover td{background:#f4f8f5;}
+  #peopleView td.who{font-weight:600;}
+  #peopleView td.who .mail{display:block;font-weight:400;font-size:12px;color:var(--dim);}
+  #peopleView tr.wusub td{background:#fafbfc;font-size:12.5px;padding:6px 20px 6px 44px;color:var(--dim);}
+  #peopleView .stime{margin-right:10px;font-variant-numeric:tabular-nums;}
+  #peopleView select.stage{font:inherit;font-size:12.5px;padding:3px 6px;border:1px solid var(--line);border-radius:6px;background:var(--panel);}
+  #peopleView select.s-booked{background:var(--milestone);}
+  #peopleView select.s-customer{background:var(--success);border-color:#b9dfc2;}
+  #peopleView select.s-lost{background:var(--error);}
+  #peopleView .icard{background:var(--panel);border:1px solid var(--line);border-radius:8px;overflow:hidden;}
+  #peopleView .icard h3{margin:0;padding:12px 16px;font-size:13.5px;border-bottom:1px solid var(--line);display:flex;justify-content:space-between;gap:8px;}
+  #peopleView .icard h3 .n{color:var(--dim);font-weight:400;font-size:12.5px;white-space:nowrap;}
+  #peopleView .icard.converted h3{background:var(--success);}
+  #peopleView .icard.not_converted h3{background:var(--milestone);}
+  #peopleView .icard .stat{display:flex;justify-content:space-between;font-size:13px;padding:4px 16px;}
+  #peopleView .icard .lh{font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:var(--dim);padding:10px 16px 4px;font-weight:600;}
+  #peopleView .icard ul{margin:0 0 10px;padding:0 16px;list-style:none;}
+  #peopleView .icard li{display:flex;justify-content:space-between;font-size:12.5px;padding:3px 0;color:var(--dim);gap:10px;}
+  #peopleView .icard li span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+  #peopleView .icard li b{color:var(--ink);}
+</style>
+
+<script>
+// ===== People tab logic (self-contained; does not touch existing tab code) =====
+(function(){
+  var OTHER_VIEWS = ['eventsView','visitorsView','analyticsView'];
+  var OTHER_TABS  = ['tabEvents','tabVisitors','tabAnalytics'];
+  var el = function(id){ return document.getElementById(id); };
+  var esc = function(s){ return (s==null?'':String(s)).replace(/[&<>"]/g,
+    function(c){ return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]; }); };
+
+  function fmtT(iso){
+    if(!iso) return '';
+    var d = new Date(String(iso).replace(' ','T')+'Z');
+    return d.toLocaleString(undefined,{month:'short',day:'numeric',hour:'numeric',minute:'2-digit'});
+  }
+
+  function showPeople(){
+    OTHER_VIEWS.forEach(function(v){ if(el(v)) el(v).style.display='none'; });
+    OTHER_TABS.forEach(function(t){ if(el(t)) el(t).classList.remove('active'); });
+    if(el('eventsControls')) el('eventsControls').style.display='none';
+    document.querySelectorAll('.pager').forEach(function(p){ p.style.display='none'; });
+    if(el('emptyMsg')) el('emptyMsg').style.display='none';
+    el('peopleView').style.display='';
+    el('tabPeople').classList.add('active');
+    loadPeople();
+  }
+
+  function hidePeople(){
+    el('peopleView').style.display='none';
+    el('tabPeople').classList.remove('active');
+    document.querySelectorAll('.pager').forEach(function(p){ p.style.display=''; });
+  }
+
+  el('tabPeople').addEventListener('click', showPeople);
+  OTHER_TABS.forEach(function(t){
+    if(el(t)) el(t).addEventListener('click', hidePeople);
+  });
+
+  el('wuSubPeople').addEventListener('click', function(){
+    el('wuSubPeople').classList.add('active');
+    el('wuSubInsights').classList.remove('active');
+    el('wuPeopleWrap').style.display=''; el('wuInsightsWrap').style.display='none';
+    loadPeople();
+  });
+  el('wuSubInsights').addEventListener('click', function(){
+    el('wuSubInsights').classList.add('active');
+    el('wuSubPeople').classList.remove('active');
+    el('wuInsightsWrap').style.display=''; el('wuPeopleWrap').style.display='none';
+    loadInsights();
+  });
+
+  async function loadPeople(){
+    var res = await fetch('/api/people');
+    if(!res.ok) return;
+    var data = await res.json();
+    var tb = el('wuPeopleRows'); tb.innerHTML='';
+    el('wuEmpty').style.display = data.rows.length ? 'none' : 'block';
+    var stages = ['lead','booked','customer','lost'];
+
+    data.rows.forEach(function(p){
+      var tr = document.createElement('tr');
+      tr.className = 'wuperson';
+      var opts = stages.map(function(s){
+        return '<option value="'+s+'"'+(s===p.funnel_stage?' selected':'')+'>'+
+          s.charAt(0).toUpperCase()+s.slice(1)+'</option>';
+      }).join('');
+      tr.innerHTML =
+        '<td class="who"><span class="twist">&#9656;</span>'+esc(p.name||'(no name)')+
+        '<span class="mail">'+esc(p.email)+(p.phone?' &middot; '+esc(p.phone):'')+'</span></td>'+
+        '<td><select class="stage s-'+esc(p.funnel_stage)+'">'+opts+'</select></td>'+
+        '<td class="count">'+p.session_count+'</td>'+
+        '<td class="count">'+p.event_count+'</td>'+
+        '<td class="when">'+fmtT(p.first_seen)+'</td>'+
+        '<td class="when">'+fmtT(p.last_seen)+'</td>';
+      tb.appendChild(tr);
+
+      var sel = tr.querySelector('select');
+      sel.addEventListener('click', function(e){ e.stopPropagation(); });
+      sel.addEventListener('change', async function(e){
+        e.stopPropagation();
+        sel.className = 'stage s-'+sel.value;
+        await fetch('/api/people/stage', {
+          method:'POST', headers:{'Content-Type':'application/json'},
+          body: JSON.stringify({ email:p.email, stage:sel.value })
+        });
+      });
+
+      tr.addEventListener('click', async function(){
+        var nx = tr.nextElementSibling, tw = tr.querySelector('.twist');
+        if(nx && nx.classList.contains('wusub')){ nx.remove(); tw.innerHTML='&#9656;'; return; }
+        tw.innerHTML='&#9662;';
+        var r = await fetch('/api/person-events?email='+encodeURIComponent(p.email));
+        if(!r.ok) return;
+        var d = await r.json();
+        var items = d.rows.map(function(ev){
+          return '<div><span class="stime">'+fmtT(ev.created_at)+'</span>'+esc(ev.label)+'</div>';
+        }).join('');
+        var sub = document.createElement('tr');
+        sub.className = 'wusub';
+        sub.innerHTML = '<td colspan="6">'+(items||'No events yet.')+'</td>';
+        tr.after(sub);
+      });
+    });
+  }
+
+  async function loadInsights(){
+    var res = await fetch('/api/insights');
+    if(!res.ok) return;
+    var d = await res.json();
+    var titles = { converted:'Booked &amp; customers', not_converted:'Inquired, not booked', anonymous:'Anonymous visitors' };
+    el('wuCards').innerHTML = ['converted','not_converted','anonymous'].map(function(k){
+      var g = d[k];
+      var li = function(arr,key){
+        return arr.length ? arr.map(function(x){
+          return '<li><span>'+esc(x[key])+'</span><b>'+x.count+'</b></li>'; }).join('')
+          : '<li><span>&mdash;</span></li>';
+      };
+      return '<div class="icard '+k+'">'+
+        '<h3><span>'+titles[k]+'</span><span class="n">'+g.sessions+' sessions</span></h3>'+
+        '<div class="stat"><span>Avg pageviews / session</span><b>'+g.avg_pageviews_per_session+'</b></div>'+
+        '<div class="stat"><span>Avg events / session</span><b>'+g.avg_events_per_session+'</b></div>'+
+        '<div class="stat"><span>Scrolled 75%+</span><b>'+g.deep_scroll_pct+'%</b></div>'+
+        '<div class="stat"><span>On mobile</span><b>'+g.mobile_pct+'%</b></div>'+
+        '<div class="lh">Top pages</div><ul>'+li(g.top_pages,'page')+'</ul>'+
+        '<div class="lh">Top referrers</div><ul>'+li(g.top_referrers,'ref')+'</ul>'+
+        '</div>';
+    }).join('');
+  }
+})();
+</script>
+
 </body>
 </html>
