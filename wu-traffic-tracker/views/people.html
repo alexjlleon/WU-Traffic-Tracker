@@ -1,0 +1,212 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>WU Traffic &mdash; People</title>
+<style>
+  :root{
+    --ink:#1c2128; --dim:#5b6472; --line:#e3e6ea; --bg:#fbfbfc; --panel:#ffffff;
+    --milestone:#fff3c4; --success:#d9f4dd; --error:#fbdcd9; --accent:#2f6f4f;
+    font-size:15px;
+  }
+  *{box-sizing:border-box;}
+  body{margin:0;background:var(--bg);color:var(--ink);
+    font-family:"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  header{padding:18px 20px 14px;border-bottom:1px solid var(--line);background:var(--panel);
+    display:flex;align-items:baseline;justify-content:space-between;flex-wrap:wrap;gap:10px;}
+  header h1{font-size:17px;font-weight:600;margin:0;}
+  header .sub{font-size:12.5px;color:var(--dim);}
+  header a{color:var(--accent);font-size:12.5px;text-decoration:none;}
+  header a:hover{text-decoration:underline;}
+  .tabs{display:flex;gap:4px;padding:10px 20px 0;background:var(--panel);
+    border-bottom:1px solid var(--line);}
+  .tabs button{font:inherit;font-size:13.5px;padding:8px 16px;border:1px solid transparent;
+    border-bottom:none;background:none;color:var(--dim);cursor:pointer;border-radius:6px 6px 0 0;}
+  .tabs button.active{color:var(--ink);background:var(--bg);border-color:var(--line);font-weight:600;}
+  table{width:100%;border-collapse:collapse;background:var(--panel);}
+  thead th{text-align:left;font-size:11.5px;text-transform:uppercase;letter-spacing:.06em;
+    color:var(--dim);font-weight:600;padding:8px 20px;border-bottom:1px solid var(--line);}
+  tbody td{padding:9px 20px;border-bottom:1px solid var(--line);vertical-align:top;font-size:13.5px;}
+  tr.person{cursor:pointer;}
+  tr.person:hover td{background:#f4f8f5;}
+  td.who{font-weight:600;}
+  td.who .mail{display:block;font-weight:400;font-size:12px;color:var(--dim);}
+  td.when{white-space:nowrap;color:var(--dim);font-variant-numeric:tabular-nums;font-size:12.5px;}
+  td.count{text-align:right;font-variant-numeric:tabular-nums;}
+  .twist{display:inline-block;width:12px;color:var(--dim);}
+  tr.subrow td{background:#fafbfc;font-size:12.5px;padding:6px 20px 6px 44px;color:var(--dim);}
+  tr.subrow .stime{margin-right:10px;font-variant-numeric:tabular-nums;}
+  select.stage{font:inherit;font-size:12.5px;padding:3px 6px;border:1px solid var(--line);
+    border-radius:6px;background:var(--panel);}
+  select.s-booked{background:var(--milestone);}
+  select.s-customer{background:var(--success);border-color:#b9dfc2;}
+  select.s-lost{background:var(--error);}
+  .insights{padding:16px 20px 30px;display:grid;gap:14px;
+    grid-template-columns:repeat(auto-fit,minmax(280px,1fr));}
+  .icard{background:var(--panel);border:1px solid var(--line);border-radius:8px;overflow:hidden;}
+  .icard h3{margin:0;padding:12px 16px;font-size:13.5px;border-bottom:1px solid var(--line);
+    display:flex;justify-content:space-between;gap:8px;}
+  .icard h3 .n{color:var(--dim);font-weight:400;font-size:12.5px;white-space:nowrap;}
+  .icard.converted h3{background:var(--success);}
+  .icard.not_converted h3{background:var(--milestone);}
+  .icard .stat{display:flex;justify-content:space-between;font-size:13px;padding:4px 16px;}
+  .icard .stat b{font-variant-numeric:tabular-nums;}
+  .listhead{font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:var(--dim);
+    padding:10px 16px 4px;font-weight:600;}
+  .icard ul{margin:0 0 10px;padding:0 16px;list-style:none;}
+  .icard li{display:flex;justify-content:space-between;font-size:12.5px;padding:3px 0;
+    color:var(--dim);gap:10px;}
+  .icard li span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+  .icard li b{color:var(--ink);}
+  .empty{padding:40px 20px;color:var(--dim);text-align:center;font-size:13.5px;}
+  .note{padding:10px 20px 0;font-size:12.5px;color:var(--dim);}
+</style>
+</head>
+<body>
+<header>
+  <div>
+    <h1>WU Traffic &mdash; People</h1>
+    <div class="sub">Identified visitors, their journeys, and what buyers do differently</div>
+  </div>
+  <div><a href="/admin/">&larr; Back to traffic dashboard</a></div>
+</header>
+
+<div class="tabs">
+  <button id="tabPeople" class="active">People</button>
+  <button id="tabInsights">Insights</button>
+</div>
+
+<div id="peopleView">
+  <div class="note">Set a stage as deals progress. Booked and Customer count as converted in Insights.</div>
+  <table>
+    <thead><tr>
+      <th>Person</th><th style="width:130px;">Stage</th><th style="width:80px;">Sessions</th>
+      <th style="width:70px;">Events</th><th style="width:150px;">First seen</th>
+      <th style="width:150px;">Last seen</th>
+    </tr></thead>
+    <tbody id="peopleRows"></tbody>
+  </table>
+</div>
+
+<div id="insightsView" style="display:none;">
+  <div class="note">Sessions grouped by the stage of the person they belong to.</div>
+  <div class="insights" id="cards"></div>
+</div>
+
+<div class="empty" id="empty" style="display:none;">No one has identified themselves yet. Once a form calls wuIdentify(), people will appear here.</div>
+
+<script>
+  const esc = (s) => (s == null ? '' : String(s)).replace(/[&<>"]/g,
+    c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+
+  function fmtTime(iso){
+    if (!iso) return '';
+    const d = new Date(String(iso).replace(' ', 'T') + 'Z');
+    return d.toLocaleString(undefined, { month:'short', day:'numeric', hour:'numeric', minute:'2-digit' });
+  }
+
+  async function loadPeople(){
+    const res = await fetch('/api/people');
+    if (!res.ok) return;
+    const data = await res.json();
+    const tbody = document.getElementById('peopleRows');
+    tbody.innerHTML = '';
+    document.getElementById('empty').style.display = data.rows.length ? 'none' : 'block';
+
+    const stages = ['lead','booked','customer','lost'];
+    for (const p of data.rows){
+      const tr = document.createElement('tr');
+      tr.className = 'person';
+      const opts = stages.map(s =>
+        '<option value="' + s + '"' + (s === p.funnel_stage ? ' selected' : '') + '>' +
+        s.charAt(0).toUpperCase() + s.slice(1) + '</option>').join('');
+      tr.innerHTML =
+        '<td class="who"><span class="twist">&#9656;</span>' + esc(p.name || '(no name)') +
+        '<span class="mail">' + esc(p.email) + (p.phone ? ' &middot; ' + esc(p.phone) : '') + '</span></td>' +
+        '<td><select class="stage s-' + esc(p.funnel_stage) + '">' + opts + '</select></td>' +
+        '<td class="count">' + p.session_count + '</td>' +
+        '<td class="count">' + p.event_count + '</td>' +
+        '<td class="when">' + fmtTime(p.first_seen) + '</td>' +
+        '<td class="when">' + fmtTime(p.last_seen) + '</td>';
+      tbody.appendChild(tr);
+
+      const sel = tr.querySelector('select');
+      sel.addEventListener('click', (e) => e.stopPropagation());
+      sel.addEventListener('change', async (e) => {
+        e.stopPropagation();
+        sel.className = 'stage s-' + sel.value;
+        await fetch('/api/people/stage', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ email: p.email, stage: sel.value })
+        });
+      });
+
+      tr.addEventListener('click', async () => {
+        const next = tr.nextElementSibling;
+        const twist = tr.querySelector('.twist');
+        if (next && next.classList.contains('subrow')){
+          next.remove(); twist.innerHTML = '&#9656;'; return;
+        }
+        twist.innerHTML = '&#9662;';
+        const r = await fetch('/api/person-events?email=' + encodeURIComponent(p.email));
+        if (!r.ok) return;
+        const d = await r.json();
+        const items = d.rows.map(ev =>
+          '<div><span class="stime">' + fmtTime(ev.created_at) + '</span>' + esc(ev.label) + '</div>'
+        ).join('');
+        const sub = document.createElement('tr');
+        sub.className = 'subrow';
+        sub.innerHTML = '<td colspan="6">' + (items || 'No events yet.') + '</td>';
+        tr.after(sub);
+      });
+    }
+  }
+
+  async function loadInsights(){
+    const res = await fetch('/api/insights');
+    if (!res.ok) return;
+    const d = await res.json();
+    const titles = {
+      converted: 'Booked &amp; customers',
+      not_converted: 'Inquired, not booked',
+      anonymous: 'Anonymous visitors'
+    };
+    document.getElementById('cards').innerHTML = ['converted','not_converted','anonymous'].map(k => {
+      const g = d[k];
+      const li = (arr, key) => arr.length
+        ? arr.map(x => '<li><span>' + esc(x[key]) + '</span><b>' + x.count + '</b></li>').join('')
+        : '<li><span>&mdash;</span></li>';
+      return '<div class="icard ' + k + '">' +
+        '<h3><span>' + titles[k] + '</span><span class="n">' + g.sessions + ' sessions</span></h3>' +
+        '<div class="stat"><span>Avg pageviews / session</span><b>' + g.avg_pageviews_per_session + '</b></div>' +
+        '<div class="stat"><span>Avg events / session</span><b>' + g.avg_events_per_session + '</b></div>' +
+        '<div class="stat"><span>Scrolled 75%+</span><b>' + g.deep_scroll_pct + '%</b></div>' +
+        '<div class="stat"><span>On mobile</span><b>' + g.mobile_pct + '%</b></div>' +
+        '<div class="listhead">Top pages</div><ul>' + li(g.top_pages, 'page') + '</ul>' +
+        '<div class="listhead">Top referrers</div><ul>' + li(g.top_referrers, 'ref') + '</ul>' +
+        '</div>';
+    }).join('');
+  }
+
+  document.getElementById('tabPeople').addEventListener('click', () => {
+    document.getElementById('tabPeople').classList.add('active');
+    document.getElementById('tabInsights').classList.remove('active');
+    document.getElementById('peopleView').style.display = '';
+    document.getElementById('insightsView').style.display = 'none';
+    loadPeople();
+  });
+  document.getElementById('tabInsights').addEventListener('click', () => {
+    document.getElementById('tabInsights').classList.add('active');
+    document.getElementById('tabPeople').classList.remove('active');
+    document.getElementById('insightsView').style.display = '';
+    document.getElementById('peopleView').style.display = 'none';
+    document.getElementById('empty').style.display = 'none';
+    loadInsights();
+  });
+
+  loadPeople();
+</script>
+</body>
+</html>
