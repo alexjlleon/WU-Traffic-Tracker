@@ -21,6 +21,7 @@ const {
 } = require('./db');
 
 const identity = require('./identity');
+const notify = require('./notify');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -135,6 +136,9 @@ app.post('/api/track', cors(corsOptions), async (req, res) => {
 
 // --- Public: form submissions identify a visitor by name/email ---
 // Sent as text/plain so it does not trigger a CORS preflight.
+// Lead alert emails: watches /api/identify and adds the two admin routes.
+app.use(notify.middleware());
+
 app.options('/api/identify', cors(corsOptions));
 app.post('/api/identify', cors(corsOptions), (req, res) => {
   const { session_id, email, name, phone } = req.body || {};
