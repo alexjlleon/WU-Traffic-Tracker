@@ -299,6 +299,7 @@ function getTopImages({ days = 30, limit = 20 } = {}) {
     SELECT
       COALESCE(json_extract(meta, '$.alt'), json_extract(meta, '$.src')) AS name,
       json_extract(meta, '$.src') AS src,
+      MAX(page_url) AS page_url,
       COUNT(*) AS clicks
     FROM events
     WHERE event_type = 'click' AND json_extract(meta, '$.kind') = 'image' AND created_at >= ${since}
@@ -312,7 +313,12 @@ function getTopImages({ days = 30, limit = 20 } = {}) {
 function getTopPricing({ days = 30, limit = 20 } = {}) {
   const since = sinceClause(days);
   return db.prepare(`
-    SELECT label, COUNT(*) AS clicks
+    SELECT
+      label,
+      MAX(json_extract(meta, '$.src')) AS src,
+      MAX(json_extract(meta, '$.href')) AS href,
+      MAX(page_url) AS page_url,
+      COUNT(*) AS clicks
     FROM events
     WHERE event_type = 'milestone' AND json_extract(meta, '$.kind') = 'pricing' AND created_at >= ${since}
     GROUP BY label
