@@ -207,6 +207,13 @@
   .panel h3{ font-size:13px; margin:0 0 12px; color:var(--ink); }
   .panel canvas{ max-height:260px; }
   .panel table{ font-size:12.5px; }
+  .hit{ display:flex; align-items:center; gap:10px; min-width:0; }
+  .hit .big{ width:56px; height:56px; object-fit:cover; border-radius:6px; border:1px solid var(--line); background:#f4f5f7; flex:none; }
+  .hit .noimg{ width:56px; height:56px; border-radius:6px; border:1px dashed var(--line); flex:none; display:flex; align-items:center; justify-content:center; color:var(--dim); font-size:10px; }
+  .hit .txt{ min-width:0; overflow:hidden; }
+  .hit .txt a{ color:var(--ink); text-decoration:none; font-weight:600; display:block; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .hit .txt a:hover{ text-decoration:underline; color:var(--accent); }
+  .hit .txt .where{ color:var(--dim); font-size:11px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; display:block; }
   .panel table thead th{ position:static; padding:6px 4px; }
   .panel table tbody td{ padding:6px 4px; font-size:12.5px; }
   .panel .num{ text-align:right; font-variant-numeric:tabular-nums; white-space:nowrap; }
@@ -694,6 +701,21 @@
     document.getElementById('next').disabled = data.page * data.pageSize >= data.total;
   }
 
+  // Resolve a possibly-relative URL against the page it was captured on.
+  function absUrl(u, base){
+    if (!u) return null;
+    try { return new URL(u, base || 'https://weddingsunlimited.com/').href; } catch(e){ return null; }
+  }
+  function fileName(u){
+    try { return decodeURIComponent(new URL(u).pathname.split('/').pop()); } catch(e){ return ''; }
+  }
+  function whereLink(pageUrl){
+    if (!pageUrl) return '';
+    let path = pageUrl;
+    try { path = new URL(pageUrl).pathname; } catch(e){}
+    return `<a class="where" href="${esc(pageUrl)}" target="_blank" rel="noopener" style="font-weight:400;color:var(--dim);">on ${esc(path)}</a>`;
+  }
+
   function destroyChart(id){
     if (charts[id]){ charts[id].destroy(); delete charts[id]; }
   }
@@ -760,15 +782,23 @@
 
     // Images table
     const imagesBody = document.getElementById('imagesRows');
-    imagesBody.innerHTML = (images.rows || []).slice(0, 12).map(i => `
-      <tr><td title="${esc(i.src || '')}">${esc(i.name || i.src || 'image')}</td><td class="num">${i.clicks}</td></tr>
-    `).join('') || '<tr><td colspan="2" style="color:var(--dim);">No image clicks yet.</td></tr>';
+    imagesBody.innerHTML = (images.rows || []).slice(0, 12).map(i => {
+      const src = absUrl(i.src, i.page_url);
+      const thumb = src ? `<a href="${esc(src)}" target="_blank" rel="noopener"><img class="big" src="${esc(src)}" alt="" loading="lazy" onerror="this.replaceWith(Object.assign(document.createElement('span'),{className:'noimg',textContent:'no preview'}))"></a>` : '<span class="noimg">no preview</span>';
+      const title = src ? `<a href="${esc(src)}" target="_blank" rel="noopener" title="Open image">${esc(i.name || fileName(src) || 'image')}</a>` : esc(i.name || 'image');
+      return `<tr><td><div class="hit">${thumb}<div class="txt">${title}${whereLink(i.page_url)}</div></div></td><td class="num">${i.clicks}</td></tr>`;
+    }).join('') || '<tr><td colspan="2" style="color:var(--dim);">No image clicks yet.</td></tr>';
 
     // Pricing table
     const pricingBody = document.getElementById('pricingRows');
-    pricingBody.innerHTML = (pricing.rows || []).slice(0, 12).map(p => `
-      <tr><td>${esc(p.label)}</td><td class="num">${p.clicks}</td></tr>
-    `).join('') || '<tr><td colspan="2" style="color:var(--dim);">No pricing clicks yet.</td></tr>';
+    pricingBody.innerHTML = (pricing.rows || []).slice(0, 12).map(p => {
+      const name = String(p.label || '').replace(/^Clicked pricing option:\s*/i, '') || 'Pricing option';
+      const src = absUrl(p.src, p.page_url);
+      const target = absUrl(p.href && !/^(#|javascript:)/i.test(p.href) ? p.href : null, p.page_url) || p.page_url;
+      const thumb = src ? `<a href="${esc(src)}" target="_blank" rel="noopener"><img class="big" src="${esc(src)}" alt="" loading="lazy" onerror="this.replaceWith(Object.assign(document.createElement('span'),{className:'noimg',textContent:'no image'}))"></a>` : '<span class="noimg">no image</span>';
+      const title = target ? `<a href="${esc(target)}" target="_blank" rel="noopener" title="Open where this goes">${esc(name)}</a>` : esc(name);
+      return `<tr><td><div class="hit">${thumb}<div class="txt">${title}${whereLink(p.page_url)}</div></div></td><td class="num">${p.clicks}</td></tr>`;
+    }).join('') || '<tr><td colspan="2" style="color:var(--dim);">No pricing clicks yet.</td></tr>';
 
     // Flow table
     const flowBody = document.getElementById('flowRows');
