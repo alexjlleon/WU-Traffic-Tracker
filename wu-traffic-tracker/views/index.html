@@ -4,7 +4,8 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>WU Traffic</title>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.4/chart.umd.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
+<script>window.Chart || document.write('<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"><\/script>');</script>
 <style>
   :root{
     --ink:#1c2128;
@@ -722,7 +723,7 @@
     // Trend line
     destroyChart('trend');
     const trendRows = trend.rows || [];
-    charts.trend = new Chart(document.getElementById('trendChart'), {
+    if (window.Chart) charts.trend = new Chart(document.getElementById('trendChart'), {
       type: 'line',
       data: {
         labels: trendRows.map(r => r.day),
@@ -737,7 +738,7 @@
     // Sources doughnut
     destroyChart('sources');
     const srcRows = (sources.rows || []).slice(0, 8);
-    charts.sources = new Chart(document.getElementById('sourcesChart'), {
+    if (window.Chart) charts.sources = new Chart(document.getElementById('sourcesChart'), {
       type: 'doughnut',
       data: {
         labels: srcRows.map(r => r.source),
